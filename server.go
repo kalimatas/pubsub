@@ -3,49 +3,103 @@ package pubsub
 import (
 	"context"
 	"fmt"
-	"sync"
+	"log"
+	"net"
 	"time"
 )
 
 const (
-	port = 1042
+	defaultAddress = ":10"
 )
 
 type Server struct {
-	Port int
+	address string
+	port    int
 
-	Wg sync.WaitGroup
+	ErrCh chan error
+
+	ctx                context.Context
+	shutdownFn         context.CancelFunc
+	shutdownCompleteCh chan struct{}
 }
 
 func NewServer() *Server {
-	s := &Server{
-		Port: port,
-	}
+	ctx, shutdownFn := context.WithCancel(context.Background())
 
-	return s
+	return &Server{
+		address: defaultAddress,
+
+		ErrCh: make(chan error),
+
+		ctx:                ctx,
+		shutdownFn:         shutdownFn,
+		shutdownCompleteCh: make(chan struct{}),
+	}
 }
 
-func (s *Server) Start(ctx context.Context) error {
-	ticker := time.NewTicker(time.Second * 2)
-	s.Wg.Add(1)
+func (s *Server) Start() {
+	addr, err := net.ResolveTCPAddr("tcp", s.address)
+	if err != nil {
+		s.ErrCh <- err
+		return
+	}
 
-	go func() {
-		for {
-			select {
-			case <-ticker.C:
-				println("tick")
-			case <-ctx.Done():
-				s.cleanup()
-				return
-			}
+	ln, err := net.ListenTCP("tcp", addr)
+	if err != nil {
+		s.ErrCh <- err
+		return
+	}
+	defer ln.Close()
+
+	log.Println("started server")
+
+	for {
+		select {
+		case <-s.ctx.Done():
+			log.Println("stop doing work")
+			break
+		default:
 		}
-	}()
 
-	return nil
+		// do not wait forever for a new connection
+		if err := ln.SetDeadline(time.Now().Add(time.Second * 3)); err != nil {
+			s.ErrCh <- err
+			return
+		}
+
+		time.Sleep(time.Second)
+		conn, err := ln.Accept()
+		if opErr, ok := err.(*net.OpError); ok && opErr.Timeout() {
+			fmt.Println(err)
+			continue
+		}
+		if err != nil {
+			fmt.Println("cannot accept new connection: ", err)
+			continue
+		}
+
+		fmt.Println("accepted a connection")
+
+		go s.handle(conn)
+
+	}
+}
+
+func (s *Server) Shutdown() {
+	defer log.Println("shutdown complete")
+
+	s.shutdownFn()
+	s.cleanup()
+	<-s.shutdownCompleteCh
 }
 
 func (s *Server) cleanup() {
-	defer s.Wg.Done()
+	defer time.Sleep(time.Second * 2)
 
-	fmt.Println("server cleanup")
+	fmt.Println("server cleanup complete")
+	close(s.shutdownCompleteCh)
+}
+
+func (s *Server) handle(conn net.Conn) {
+	log.Println("handling new connection...")
 }

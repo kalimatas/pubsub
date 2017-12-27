@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/signal"
@@ -9,23 +8,26 @@ import (
 	"github.com/kalimatas/pubsub"
 )
 
-func main() {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	server := pubsub.NewServer()
-	if err := server.Start(ctx); err != nil {
-		fmt.Fprintln(os.Stderr, "cannot start Server: ", err)
-		os.Exit(1)
-	}
-
+func handleSignals(server *pubsub.Server) {
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt)
 
-	select {
-	case <-c:
-		cancel()
-		server.Wg.Wait()
-	}
+	<-c
+	fmt.Println("got signal")
+	server.Shutdown()
+}
+
+func main() {
+	server := pubsub.NewServer()
+	go server.Start()
+
+	go func() {
+		err := <-server.ErrCh
+		fmt.Println("cannot start server: ", err)
+		os.Exit(1)
+	}()
+
+	handleSignals(server)
 
 	println("finish him")
 }
